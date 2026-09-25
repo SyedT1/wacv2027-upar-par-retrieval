@@ -37,15 +37,22 @@ This README summarizes the supplied `upar-challenge-m.txt` challenge description
 
 For a starter training run on Kaggle, use [upar_track2_resnet18_kaggle.ipynb](notebooks/resnet18_baseline/upar_track2_resnet18_kaggle.ipynb). With Internet and a GPU enabled, it downloads the challenge training data, trains a 40-attribute model, saves `upar_track2_best.pth`, and packages `upar_track2_submission.zip` under `/kaggle/working`.
 
-For a stronger foundation-model experiment, use [upar_track2_siglip2_kaggle.ipynb](notebooks/siglip2_attribute/upar_track2_siglip2_kaggle.ipynb). It extracts frozen SigLIP 2 image features, trains a 40-attribute head, selects a retrieval score using the public validation queries, and packages an offline TorchScript submission. Feature extraction is much slower than the ResNet-18 starter, and its improvement must be checked against the printed validation mADM.
+For a stronger ConvNeXt Tiny run, use [upar-track2-convnext-tiny.ipynb](notebooks/convnext_tiny/upar-track2-convnext-tiny.ipynb). It downloads the same challenge data, fine-tunes an ImageNet-pretrained ConvNeXt Tiny, saves `upar_track2_convnext_tiny_best.pth`, and builds `upar_track2_convnext_tiny_submission.zip`. Training downloads the pretrained weights; the packaged inference code loads only local files and needs no network access.
 
-## ResNet-18 baseline: configuration and observed result
+## Reported retrieval results
 
-The following result was reported from a run of the **ResNet-18 notebook above**. It is a retrieval result for that submission, not an attribute-classification accuracy or a SigLIP 2 result. The [saved submission archive](notebooks/resnet18_baseline/upar_track2_submission.zip) contains a checkpoint recording epoch **2** and weighted validation BCE **0.4285**; those values come from the checkpoint metadata, while the retrieval scores below were supplied separately.
+The scores below were supplied from submissions of the two notebooks. They are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values come separately from the saved archives.
 
 | Model | mADM (ranking metric) | mAP | Rank-1 | Rank-5 | Rank-10 | mINP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ResNet-18 baseline | **0.3469** | 0.1048 | 0.1285 | 0.2232 | 0.2823 | 0.0769 |
+| ConvNeXt Tiny | **0.4135** | 0.1413 | 0.1585 | 0.2988 | 0.3767 | 0.1037 |
+
+ConvNeXt Tiny improves mADM by **0.0666** over the reported ResNet-18 result.
+
+## ResNet-18 baseline: configuration
+
+The [saved ResNet-18 submission archive](notebooks/resnet18_baseline/upar_track2_submission.zip) contains a checkpoint recording epoch **2** and weighted validation BCE **0.4285**.
 
 The notebook and its companion [training script](train_upar_track2_kaggle.py) use this configuration:
 
@@ -79,6 +86,41 @@ d(q, g) = sum_a |q_a - p_ga|
 ```
 
 Gallery images are ranked by **ascending** distance. The second form is the vectorized computation in `run.py`. Attribute names are reordered to match the query before scoring. The positive-class weighting helps rare labels during training but can shift probability calibration; the baseline does not correct for that shift before applying the L1 distance.
+
+## ConvNeXt Tiny: configuration and scoring
+
+The [ConvNeXt Tiny notebook](notebooks/convnext_tiny/upar-track2-convnext-tiny.ipynb) uses the same training and validation images and attribute order as the baseline. Its [saved submission archive](notebooks/convnext_tiny/upar_track2_convnext_tiny_submission.zip) records checkpoint epoch **2** and weighted validation BCE **0.3756** (full value `0.37556340439679947`). Checkpoint selection uses weighted validation BCE, not retrieval mADM.
+
+| Component | Setting |
+| --- | --- |
+| Training data | Supplied `train.csv`: 97,669 images from PA-100K, Market1501, and PETA |
+| Validation data | Supplied `val.csv`: 33,407 images; used to select the checkpoint by attribute loss |
+| Backbone | `torchvision.models.convnext_tiny` with `ConvNeXt_Tiny_Weights.DEFAULT` ImageNet weights during training; all layers fine-tuned |
+| Output | Replace `model.classifier[-1]` with a linear layer producing 40 independent attribute logits |
+| Input | RGB, resized to **256 × 128** pixels (height × width); normalized with mean `(0.485, 0.456, 0.406)` and standard deviation `(0.229, 0.224, 0.225)` |
+| Training augmentation | Random horizontal flip with probability 0.5; no other augmentation |
+| Loss | `BCEWithLogitsLoss` with the per-attribute positive-class weights below |
+| Optimizer and schedule | AdamW, initial learning rate `1e-4`, weight decay `1e-4`; `CosineAnnealingLR` stepped after each epoch with `T_max=8` |
+| Run | 8 epochs, batch size 64, 2 data-loader workers, seed 42; CUDA mixed precision when available |
+| Checkpoint | Epoch with the lowest mean validation weighted BCE; saved as `upar_track2_convnext_tiny_best.pth` |
+| Inference | Batch size 64, sigmoid probabilities, unweighted L1 query distance; returns `distances` |
+
+For training image $i$ and attribute $a$, let $y_{ia}\in\{0,1\}$ be the label, $z_{ia}$ the model logit, $p_{ia}=\operatorname{sigmoid}(z_{ia})$, $N$ the training-image count, and $n_a$ the count of positive labels for attribute $a$. The positive weight and mean training loss for a batch of $B$ images are
+
+```text
+w_a = clip((N - n_a) / max(n_a, 1), 1, 20)
+L   = -(1 / (40 B)) * sum_(i=1..B) sum_(a=1..40)
+        [w_a y_ia log(p_ia) + (1 - y_ia) log(1 - p_ia)]
+```
+
+At inference, for binary query $q$ and gallery image $g$, the notebook predicts $p_{ga}=\operatorname{sigmoid}(z_{ga})$ once per image and computes
+
+```text
+d(q, g) = sum_(a=1..40) |q_a - p_ga|
+        = sum_a p_ga + sum_a q_a (1 - 2 p_ga).
+```
+
+Gallery images are ranked by **ascending** distance. Attribute columns are reordered to match the query names. The inference code does not calibrate probabilities or adjust the 40 attribute weights for ranking. The ZIP contains `run.py`, the unchanged `metadata.yaml`, and `assets/upar_track2_convnext_tiny_best.pth`; `run.py` constructs the model with `weights=None` and loads that local checkpoint.
 
 ## Submission API
 
