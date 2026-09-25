@@ -70,20 +70,25 @@ The notebook and its companion [training script](train_upar_track2_kaggle.py) us
 | Checkpoint | Epoch with the lowest mean validation weighted BCE; saved as `upar_track2_best.pth` |
 | Inference | Batch size 128, sigmoid probabilities, unweighted L1 query distance; returns `distances` |
 
-For attribute `a`, the positive-class weight is
+For attribute $a$, the positive-class weight is
 
-```text
-w_a = clip((N - n_a) / max(n_a, 1), 1, 20)
-```
+$$
+w_a=\min\left(20,\max\left(1,\frac{N-n_a}{\max(n_a,1)}\right)\right).
+$$
 
-Here `N` is the number of training images and `n_a` is the number labeled positive for attribute `a`. Training minimizes the average weighted binary cross-entropy over the 40 logits. The notebook **does not select or calibrate the checkpoint using retrieval mADM**.
+Here $N$ is the number of training images and $n_a$ is the number labeled positive for attribute $a$. Training minimizes the average weighted binary cross-entropy over the 40 logits. The notebook **does not select or calibrate the checkpoint using retrieval mADM**.
 
-At inference, `q_a` is the binary query value, and `p_ga = sigmoid(z_ga)` is the predicted probability for attribute `a` of gallery image `g`. The returned distance is
+At inference, $q_a\in\{0,1\}$ is the query value, and $p_{ga}=\sigma(z_{ga})$ is the predicted probability for attribute $a$ of gallery image $g$. The returned distance is
 
-```text
-d(q, g) = sum_a |q_a - p_ga|
-        = sum_a p_ga + sum_a q_a (1 - 2 p_ga).
-```
+$$
+d(q,g)=\sum_{a=1}^{40}|q_a-p_{ga}|.
+$$
+
+Equivalently,
+
+$$
+d(q,g)=\sum_{a=1}^{40}p_{ga}+\sum_{a=1}^{40}q_a(1-2p_{ga}).
+$$
 
 Gallery images are ranked by **ascending** distance. The second form is the vectorized computation in `run.py`. Attribute names are reordered to match the query before scoring. The positive-class weighting helps rare labels during training but can shift probability calibration; the baseline does not correct for that shift before applying the L1 distance.
 
@@ -105,20 +110,21 @@ The [ConvNeXt Tiny notebook](notebooks/convnext_tiny/upar-track2-convnext-tiny.i
 | Checkpoint | Epoch with the lowest mean validation weighted BCE; saved as `upar_track2_convnext_tiny_best.pth` |
 | Inference | Batch size 64, sigmoid probabilities, unweighted L1 query distance; returns `distances` |
 
-For training image `i` and attribute `a`, let `y_ia` be the binary label, `z_ia` the model logit, `p_ia = sigmoid(z_ia)` the predicted probability, `N` the training-image count, and `n_a` the count of positive labels for attribute `a`. The positive weight and mean training loss for a batch of `B` images are
+For training image $i$ and attribute $a$, let $y_{ia}\in\{0,1\}$ be the label, $z_{ia}$ the model logit, $p_{ia}=\sigma(z_{ia})$ the predicted probability, $N$ the training-image count, and $n_a$ the count of positive labels for attribute $a$. The positive weight and mean training loss for a batch of $B$ images are
 
-```text
-w_a = clip((N - n_a) / max(n_a, 1), 1, 20)
-L   = -(1 / (40 B)) * sum_(i=1..B) sum_(a=1..40)
-        [w_a y_ia log(p_ia) + (1 - y_ia) log(1 - p_ia)]
-```
+$$
+w_a=\min\left(20,\max\left(1,\frac{N-n_a}{\max(n_a,1)}\right)\right),
+$$
 
-At inference, for binary query `q` and gallery image `g`, the notebook predicts `p_ga = sigmoid(z_ga)` once per image and computes
+$$
+L_B=-\frac{1}{40B}\sum_{i=1}^{B}\sum_{a=1}^{40}\left[w_a y_{ia}\log(p_{ia})+(1-y_{ia})\log(1-p_{ia})\right].
+$$
 
-```text
-d(q, g) = sum_(a=1..40) |q_a - p_ga|
-        = sum_a p_ga + sum_a q_a (1 - 2 p_ga).
-```
+At inference, for binary query $q$ and gallery image $g$, the notebook predicts $p_{ga}=\sigma(z_{ga})$ once per image and computes
+
+$$
+d(q,g)=\sum_{a=1}^{40}|q_a-p_{ga}|=\sum_{a=1}^{40}p_{ga}+\sum_{a=1}^{40}q_a(1-2p_{ga}).
+$$
 
 Gallery images are ranked by **ascending** distance. Attribute columns are reordered to match the query names. The inference code does not calibrate probabilities or adjust the 40 attribute weights for ranking. The ZIP contains `run.py`, the unchanged `metadata.yaml`, and `assets/upar_track2_convnext_tiny_best.pth`; `run.py` constructs the model with `weights=None` and loads that local checkpoint.
 
@@ -157,28 +163,43 @@ Lists, NumPy arrays, and tensors are accepted. Invalid shapes, NaN/Inf values, b
 
 The leaderboard's ranking metric is **mADM** (mean average degree of match). It rewards placing both exact matches and close attribute matches early. Other reported metrics are mAP, Rank-1, Rank-5, Rank-10, and mINP. An exact match requires all 40 attributes to agree with the query.
 
-For one query, let `G` be the gallery size, `R` the number of exact matches, and `r_1 < ... < r_R` their one-based positions in the returned ranking. The per-query metrics are
+For one query, let $G$ be the gallery size, $R$ the number of exact matches, and $r_1<\cdots<r_R$ their one-based positions in the returned ranking. The per-query metrics are
 
-```text
-AP     = (1/R) * sum_(k=1..R) k / r_k
-INP    = R / r_R
-Rank-K = 1 if r_1 <= K, otherwise 0       (K = 1, 5, 10)
-```
+$$
+AP=\frac{1}{R}\sum_{k=1}^{R}\frac{k}{r_k},
+$$
 
-To compute ADM, let `g_i` be the image at rank `i`. Define its degree of match and its per-query normalized degree of match as
+$$
+INP=\frac{R}{r_R},
+$$
 
-```text
-dom(g)  = (1/40) * sum_(a=1..40) 1[label_ga = q_a]
-mean    = (1/G) * sum_(g in gallery) dom(g)
-maxdom  = max_(g in gallery) dom(g)
-ndom(g) = max(0, (dom(g) - mean) / (maxdom - mean))
-```
+$$
+Rank_K=[r_1\leq K],\qquad K\in\{1,5,10\},
+$$
 
-Each challenge query has at least one exact gallery match, so `maxdom = 1`. The denominator is positive when the gallery also contains a nonmatch. At every exact-match rank, ADM credits the average normalized agreement of *all* images retrieved up to that rank:
+where the bracket is $1$ when its condition is true and $0$ otherwise. To compute ADM, let $g_i$ be the image at rank $i$ and $y_{ga}$ the true value of attribute $a$ for gallery image $g$. Define $D_q(g)$ as its degree of match, $\mu_q$ as the gallery mean, $M_q$ as the maximum degree, and $\widetilde D_q(g)$ as the normalized degree:
 
-```text
-ADM = (1/R) * sum_(k=1..R) [(1/r_k) * sum_(i=1..r_k) ndom(g_i)]
-```
+$$
+D_q(g)=\frac{1}{40}\sum_{a=1}^{40}[y_{ga}=q_a],
+$$
+
+$$
+\mu_q=\frac{1}{G}\sum_{g=1}^{G}D_q(g),
+$$
+
+$$
+M_q=\max_{1\leq g\leq G}D_q(g),
+$$
+
+$$
+\widetilde D_q(g)=\max\left(0,\frac{D_q(g)-\mu_q}{M_q-\mu_q}\right).
+$$
+
+Each challenge query has at least one exact gallery match, so $M_q=1$. The denominator is positive when the gallery also contains a nonmatch. At every exact-match rank, ADM credits the average normalized agreement of *all* images retrieved up to that rank:
+
+$$
+ADM_q=\frac{1}{R}\sum_{k=1}^{R}\left[\frac{1}{r_k}\sum_{i=1}^{r_k}\widetilde D_q(g_i)\right].
+$$
 
 **mADM, mAP, and mINP** are the corresponding per-query values averaged over all queries. **Rank-K** is the average of its per-query indicator. Thus mADM also rewards near matches early in the list, while mAP and Rank-K count only exact 40-attribute matches. These are evaluator equations; the ResNet-18 notebook does not compute them during training.
 
