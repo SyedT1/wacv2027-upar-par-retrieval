@@ -70,15 +70,15 @@ The notebook and its companion [training script](train_upar_track2_kaggle.py) us
 | Checkpoint | Epoch with the lowest mean validation weighted BCE; saved as `upar_track2_best.pth` |
 | Inference | Batch size 128, sigmoid probabilities, unweighted L1 query distance; returns `distances` |
 
-For attribute $a$, the positive-class weight is
+For attribute `a`, the positive-class weight is
 
 ```text
 w_a = clip((N - n_a) / max(n_a, 1), 1, 20)
 ```
 
-Here $N$ is the number of training images and $n_a$ is the number labeled positive for attribute $a$. Training minimizes the average weighted binary cross-entropy over the 40 logits. The notebook **does not select or calibrate the checkpoint using retrieval mADM**.
+Here `N` is the number of training images and `n_a` is the number labeled positive for attribute `a`. Training minimizes the average weighted binary cross-entropy over the 40 logits. The notebook **does not select or calibrate the checkpoint using retrieval mADM**.
 
-At inference, let $q_a \in \{0,1\}$ be the query value and $p_{ga}=\operatorname{sigmoid}(z_{ga})$ the predicted probability for gallery image $g$. The returned distance is
+At inference, `q_a` is the binary query value, and `p_ga = sigmoid(z_ga)` is the predicted probability for attribute `a` of gallery image `g`. The returned distance is
 
 ```text
 d(q, g) = sum_a |q_a - p_ga|
@@ -105,7 +105,7 @@ The [ConvNeXt Tiny notebook](notebooks/convnext_tiny/upar-track2-convnext-tiny.i
 | Checkpoint | Epoch with the lowest mean validation weighted BCE; saved as `upar_track2_convnext_tiny_best.pth` |
 | Inference | Batch size 64, sigmoid probabilities, unweighted L1 query distance; returns `distances` |
 
-For training image $i$ and attribute $a$, let $y_{ia}\in\{0,1\}$ be the label, $z_{ia}$ the model logit, $p_{ia}=\operatorname{sigmoid}(z_{ia})$, $N$ the training-image count, and $n_a$ the count of positive labels for attribute $a$. The positive weight and mean training loss for a batch of $B$ images are
+For training image `i` and attribute `a`, let `y_ia` be the binary label, `z_ia` the model logit, `p_ia = sigmoid(z_ia)` the predicted probability, `N` the training-image count, and `n_a` the count of positive labels for attribute `a`. The positive weight and mean training loss for a batch of `B` images are
 
 ```text
 w_a = clip((N - n_a) / max(n_a, 1), 1, 20)
@@ -113,7 +113,7 @@ L   = -(1 / (40 B)) * sum_(i=1..B) sum_(a=1..40)
         [w_a y_ia log(p_ia) + (1 - y_ia) log(1 - p_ia)]
 ```
 
-At inference, for binary query $q$ and gallery image $g$, the notebook predicts $p_{ga}=\operatorname{sigmoid}(z_{ga})$ once per image and computes
+At inference, for binary query `q` and gallery image `g`, the notebook predicts `p_ga = sigmoid(z_ga)` once per image and computes
 
 ```text
 d(q, g) = sum_(a=1..40) |q_a - p_ga|
@@ -157,7 +157,7 @@ Lists, NumPy arrays, and tensors are accepted. Invalid shapes, NaN/Inf values, b
 
 The leaderboard's ranking metric is **mADM** (mean average degree of match). It rewards placing both exact matches and close attribute matches early. Other reported metrics are mAP, Rank-1, Rank-5, Rank-10, and mINP. An exact match requires all 40 attributes to agree with the query.
 
-For one query, let $G$ be the gallery size, $R$ the number of exact matches, and $r_1 < \dots < r_R$ their one-based positions in the returned ranking. The per-query metrics are
+For one query, let `G` be the gallery size, `R` the number of exact matches, and `r_1 < ... < r_R` their one-based positions in the returned ranking. The per-query metrics are
 
 ```text
 AP     = (1/R) * sum_(k=1..R) k / r_k
@@ -165,7 +165,7 @@ INP    = R / r_R
 Rank-K = 1 if r_1 <= K, otherwise 0       (K = 1, 5, 10)
 ```
 
-To compute ADM, let $g_i$ be the image at rank $i$. Define its degree of match and its per-query normalized degree of match as
+To compute ADM, let `g_i` be the image at rank `i`. Define its degree of match and its per-query normalized degree of match as
 
 ```text
 dom(g)  = (1/40) * sum_(a=1..40) 1[label_ga = q_a]
