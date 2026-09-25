@@ -33,6 +33,53 @@ This README summarizes the supplied `upar-challenge-m.txt` challenge description
 | 18 | UpperBody-Color-Yellow | 38 | Accessory-Glasses-Sun |
 | 19 | UpperBody-Color-Other | 39 | Accessory-Hat |
 
+## Notebooks
+
+For a starter training run on Kaggle, use [upar_track2_resnet18_kaggle.ipynb](notebooks/resnet18_baseline/upar_track2_resnet18_kaggle.ipynb). With Internet and a GPU enabled, it downloads the challenge training data, trains a 40-attribute model, saves `upar_track2_best.pth`, and packages `upar_track2_submission.zip` under `/kaggle/working`.
+
+For a stronger foundation-model experiment, use [upar_track2_siglip2_kaggle.ipynb](notebooks/siglip2_attribute/upar_track2_siglip2_kaggle.ipynb). It extracts frozen SigLIP 2 image features, trains a 40-attribute head, selects a retrieval score using the public validation queries, and packages an offline TorchScript submission. Feature extraction is much slower than the ResNet-18 starter, and its improvement must be checked against the printed validation mADM.
+
+## ResNet-18 baseline: configuration and observed result
+
+The following result was reported from a run of the **ResNet-18 notebook above**. It is a retrieval result for that submission, not an attribute-classification accuracy or a SigLIP 2 result. The [saved submission archive](notebooks/resnet18_baseline/upar_track2_submission.zip) contains a checkpoint recording epoch **2** and weighted validation BCE **0.4285**; those values come from the checkpoint metadata, while the retrieval scores below were supplied separately.
+
+| Model | mADM (ranking metric) | mAP | Rank-1 | Rank-5 | Rank-10 | mINP |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ResNet-18 baseline | **0.3469** | 0.1048 | 0.1285 | 0.2232 | 0.2823 | 0.0769 |
+
+The notebook and its companion [training script](train_upar_track2_kaggle.py) use this configuration:
+
+| Component | Setting |
+| --- | --- |
+| Training data | Supplied `train.csv`: 97,669 images from PA-100K, Market1501, and PETA |
+| Validation data | Supplied `val.csv`: 33,407 images; used to select the checkpoint by attribute loss |
+| Backbone | `torchvision.models.resnet18` with default ImageNet pretrained weights; all layers fine-tuned |
+| Output | Final 512-to-40 fully connected layer gives 40 independent attribute logits |
+| Input | RGB, resized to **256 × 128** pixels (height × width); normalized with mean `(0.485, 0.456, 0.406)` and standard deviation `(0.229, 0.224, 0.225)` |
+| Training augmentation | Random horizontal flip with the torchvision default probability of 0.5; no other augmentation in the notebook |
+| Loss | `BCEWithLogitsLoss` with a per-attribute positive-class weight, defined below |
+| Optimizer | AdamW; learning rate `3e-4`, weight decay `1e-4`; no learning-rate schedule |
+| Run | 5 epochs, batch size 128, 2 data-loader workers, seed 42; CUDA mixed precision when available |
+| Checkpoint | Epoch with the lowest mean validation weighted BCE; saved as `upar_track2_best.pth` |
+| Inference | Batch size 128, sigmoid probabilities, unweighted L1 query distance; returns `distances` |
+
+For attribute $a$, the positive-class weight is
+
+```text
+w_a = clip((N - n_a) / max(n_a, 1), 1, 20)
+```
+
+Here $N$ is the number of training images and $n_a$ is the number labeled positive for attribute $a$. Training minimizes the average weighted binary cross-entropy over the 40 logits. The notebook **does not select or calibrate the checkpoint using retrieval mADM**.
+
+At inference, let $q_a \in \{0,1\}$ be the query value and $p_{ga}=\operatorname{sigmoid}(z_{ga})$ the predicted probability for gallery image $g$. The returned distance is
+
+```text
+d(q, g) = sum_a |q_a - p_ga|
+        = sum_a p_ga + sum_a q_a (1 - 2 p_ga).
+```
+
+Gallery images are ranked by **ascending** distance. The second form is the vectorized computation in `run.py`. Attribute names are reordered to match the query before scoring. The positive-class weighting helps rare labels during training but can shift probability calibration; the baseline does not correct for that shift before applying the L1 distance.
+
 ## Submission API
 
 Upload a ZIP of the **contents** of a submission folder, with `run.py` and the example submission's unchanged `metadata.yaml` at the archive root. Include model weights and any dependencies your code needs. The evaluation container has no network access and uses `pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime` (Python 3.11, PyTorch 2.4.1, torchvision, NumPy, and Pillow).
@@ -67,6 +114,31 @@ Lists, NumPy arrays, and tensors are accepted. Invalid shapes, NaN/Inf values, b
 ## Evaluation
 
 The leaderboard's ranking metric is **mADM** (mean average degree of match). It rewards placing both exact matches and close attribute matches early. Other reported metrics are mAP, Rank-1, Rank-5, Rank-10, and mINP. An exact match requires all 40 attributes to agree with the query.
+
+For one query, let $G$ be the gallery size, $R$ the number of exact matches, and $r_1 < \dots < r_R$ their one-based positions in the returned ranking. The per-query metrics are
+
+```text
+AP     = (1/R) * sum_(k=1..R) k / r_k
+INP    = R / r_R
+Rank-K = 1 if r_1 <= K, otherwise 0       (K = 1, 5, 10)
+```
+
+To compute ADM, let $g_i$ be the image at rank $i$. Define its degree of match and its per-query normalized degree of match as
+
+```text
+dom(g)  = (1/40) * sum_(a=1..40) 1[label_ga = q_a]
+mean    = (1/G) * sum_(g in gallery) dom(g)
+maxdom  = max_(g in gallery) dom(g)
+ndom(g) = max(0, (dom(g) - mean) / (maxdom - mean))
+```
+
+Each challenge query has at least one exact gallery match, so `maxdom = 1`. The denominator is positive when the gallery also contains a nonmatch. At every exact-match rank, ADM credits the average normalized agreement of *all* images retrieved up to that rank:
+
+```text
+ADM = (1/R) * sum_(k=1..R) [(1/r_k) * sum_(i=1..r_k) ndom(g_i)]
+```
+
+**mADM, mAP, and mINP** are the corresponding per-query values averaged over all queries. **Rank-K** is the average of its per-query indicator. Thus mADM also rewards near matches early in the list, while mAP and Rank-K count only exact 40-attribute matches. These are evaluator equations; the ResNet-18 notebook does not compute them during training.
 
 The latest valid submission, rather than the best previous submission, appears on the leaderboard.
 
