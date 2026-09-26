@@ -39,16 +39,69 @@ For a starter training run on Kaggle, use [upar_track2_resnet18_kaggle.ipynb](no
 
 For a stronger ConvNeXt Tiny run, use [upar-track2-convnext-tiny.ipynb](notebooks/convnext_tiny/upar-track2-convnext-tiny.ipynb). It downloads the same challenge data, fine-tunes an ImageNet-pretrained ConvNeXt Tiny, saves `upar_track2_convnext_tiny_best.pth`, and builds `upar_track2_convnext_tiny_submission.zip`. Training downloads the pretrained weights; the packaged inference code loads only local files and needs no network access.
 
+For an AttriVision-inspired CLIP experiment, use [upar_track2_clip_attrivision_kaggle.ipynb](notebooks/clip_attrivision/upar_track2_clip_attrivision_kaggle.ipynb) or its companion [training script](notebooks/clip_attrivision/upar_clip_attrivision.py). It uses generic pretrained CLIP ViT-B/32 features, positive and negative attribute prompts, and a focal-loss head trained only on the supplied challenge data. It can resume the head from its best checkpoint for up to 100 epochs, selects a checkpoint and ranking score on public validation retrieval mADM, reports full validation metrics, and builds `upar_clip_attrivision_submission.zip`. This is an adaptation of the CLIP and prompt ideas in [AttriVision](https://openaccess.thecvf.com/content/WACV2025W/V3SC/papers/Sedeh_AttriVision_Advancing_Generalization_in_Pedestrian_Attribute_Recognition_using_CLIP_WACVW_2025_paper.pdf), not a reproduction of that paper. An earlier 25-epoch run reached 0.3635 mADM on the public validation gallery. The newer user-reported results appear below; the evaluation split for those numbers was not specified.
+
 ## Reported retrieval results
 
-The scores below were supplied from submissions of the two notebooks. They are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values come separately from the saved archives.
+The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submissions. The CLIP scores are the user-reported rendered results; their evaluation split was not specified. These are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values for the first two models come separately from their saved archives.
 
 | Model | mADM (ranking metric) | mAP | Rank-1 | Rank-5 | Rank-10 | mINP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ResNet-18 baseline | **0.3469** | 0.1048 | 0.1285 | 0.2232 | 0.2823 | 0.0769 |
 | ConvNeXt Tiny | **0.4135** | 0.1413 | 0.1585 | 0.2988 | 0.3767 | 0.1037 |
+| CLIP ViT-B/32 + AttriVision-inspired attribute head | **0.4278** | 0.1450 | 0.1471 | 0.3253 | 0.4253 | 0.1060 |
 
 ConvNeXt Tiny improves mADM by **0.0666** over the reported ResNet-18 result.
+
+## CLIP ViT-B/32 with an AttriVision-inspired attribute head
+
+The [Kaggle notebook](notebooks/clip_attrivision/upar_track2_clip_attrivision_kaggle.ipynb) downloads the official challenge data and runs the companion [training script](notebooks/clip_attrivision/upar_clip_attrivision.py). The [submission archive](notebooks/clip_attrivision/upar_clip_attrivision_submission.zip) contains a traced image encoder and head, `run.py`, `metadata.yaml`, and `assets/config.json`. The archive's config records the 40 attribute names and `"score_method": "nll"`. This is an adaptation inspired by AttriVision's use of CLIP and attribute prompts, not a reproduction of its architecture or training protocol.
+
+| Component | Setting |
+| --- | --- |
+| Training and validation | Official `train.csv` and `val.csv` with 40 binary labels in the fixed challenge order; no external pedestrian-attribute training data |
+| Backbone | `openai/clip-vit-base-patch32`; pretrained CLIP vision and text encoders are frozen; image embeddings come from the vision pooled output followed by CLIP's visual projection and L2 normalization |
+| Input | RGB, padded to 224 × 224 with black pixels while preserving aspect ratio; CLIP mean `(0.48145466, 0.4578275, 0.40821073)` and standard deviation `(0.26862954, 0.26130258, 0.27577711)` |
+| Text features | One positive and one negative prompt per attribute; each CLIP text embedding is L2 normalized, then the negative embedding is subtracted from the positive embedding |
+| Trainable head | A 512-to-40 linear residual plus one trainable log scale; residual weights and biases start at zero, log scale starts at 2.3 |
+| Loss and optimizer | Focal binary cross-entropy with gamma 2; AdamW, learning rate `1e-3`, weight decay `0.01`; no learning-rate schedule |
+| Training | Frozen image features cached as half precision; head batch size 2,048, up to 100 total epochs, seed 42, 2 data-loader workers; image feature batch size 128; CUDA autocast during feature extraction |
+| Model selection | Check validation retrieval mADM at epoch 1, every 5 epochs, and epoch 100 on a fixed random subset of at most 256 unique validation queries; save the best head to `upar_clip_attrivision_head.pth` and resume from it if present |
+| Ranking selection | Compare negative log likelihood (NLL) and L1 distances on the same selected queries; choose the method with higher mADM, then report all unique validation queries; the packaged artifact uses NLL |
+| Inference | TorchScript model predicts 40 logits in batches of 128, reorders columns by the requested attribute names, and returns a `Q × G` `distances` matrix; lower distances rank first |
+
+Let $x_g$ be gallery image $g$. Let $v_g$ be its projected and L2-normalized CLIP image feature, and let $t_a^+$ and $t_a^-$ be the L2-normalized CLIP text features for positive and negative prompts for attribute $a$. The frozen prompt difference and trainable logit are
+
+$$
+\Delta_a=t_a^+-t_a^-,\qquad
+z_{ga}=e^s v_g^\top\Delta_a+w_a^\top v_g+b_a,
+$$
+
+where $s$, $w_a$, and $b_a$ are trained, with $s=2.3$, $w_a=0$, and $b_a=0$ at initialization. The prompt differences are computed once and kept fixed. Only the residual layer and log scale receive optimizer updates.
+
+For label $y_{ia}\in\{0,1\}$ and predicted probability $p_{ia}=\sigma(z_{ia})$, the focal loss for a batch of $B$ images is
+
+$$
+\ell_{ia}=-y_{ia}\log p_{ia}-(1-y_{ia})\log(1-p_{ia}),\qquad
+L_B=\frac{1}{40B}\sum_{i=1}^{B}\sum_{a=1}^{40}(1-e^{-\ell_{ia}})^2\ell_{ia}.
+$$
+
+For query $q\in\{0,1\}^{40}$, the packaged submission ranks gallery image $g$ using the independent-label Bernoulli NLL:
+
+$$
+d_{\mathrm{NLL}}(q,g)
+=\sum_{a=1}^{40}\bigl[\log(1+e^{z_{ga}})-q_a z_{ga}\bigr]
+=\sum_{a=1}^{40}\log(1+e^{z_{ga}})-q^\top z_g.
+$$
+
+The script also considers probability L1 distance during validation:
+
+$$
+d_{\mathrm{L1}}(q,g)=\sum_{a=1}^{40}|q_a-p_{ga}|
+=\sum_{a=1}^{40}p_{ga}+\sum_{a=1}^{40}q_a(1-2p_{ga}).
+$$
+
+Both distances are sorted in ascending order. Attribute columns are aligned to the incoming query names before scoring. The full definitions of mADM, mAP, Rank-K, and mINP are in [Evaluation](#evaluation). The six scores in the results table were supplied by the user; the archive does not record their evaluation split or the selected checkpoint epoch.
 
 ## ResNet-18 baseline: configuration
 
