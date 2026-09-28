@@ -41,17 +41,67 @@ For a stronger ConvNeXt Tiny run, use [upar-track2-convnext-tiny.ipynb](notebook
 
 For an AttriVision-inspired CLIP experiment, use [upar_track2_clip_attrivision_kaggle.ipynb](notebooks/clip_attrivision/upar_track2_clip_attrivision_kaggle.ipynb) or its companion [training script](notebooks/clip_attrivision/upar_clip_attrivision.py). It uses generic pretrained CLIP ViT-B/32 features, positive and negative attribute prompts, and a focal-loss head trained only on the supplied challenge data. It can resume the head from its best checkpoint for up to 100 epochs, selects a checkpoint and ranking score on public validation retrieval mADM, reports full validation metrics, and builds `upar_clip_attrivision_submission.zip`. This is an adaptation of the CLIP and prompt ideas in [AttriVision](https://openaccess.thecvf.com/content/WACV2025W/V3SC/papers/Sedeh_AttriVision_Advancing_Generalization_in_Pedestrian_Attribute_Recognition_using_CLIP_WACVW_2025_paper.pdf), not a reproduction of that paper. An earlier 25-epoch run reached 0.3635 mADM on the public validation gallery. The newer user-reported results appear below; the evaluation split for those numbers was not specified.
 
+For DINOv3 attribute retrieval, use [upar-track2-dinov3-kaggle.ipynb](notebooks/dinov3_attribute/upar-track2-dinov3-kaggle.ipynb) or its companion [training script](notebooks/dinov3_attribute/upar_dinov3.py). It caches frozen DINOv3 ViT-B/16 features, trains a 40-attribute head, selects the checkpoint and ranking method on public validation mADM, and builds `upar_dinov3_submission.zip`. Training requires a Kaggle GPU, Internet access, accepted access to the gated pretrained checkpoint, and a Hugging Face read token supplied through `HF_TOKEN`.
+
 ## Reported retrieval results
 
-The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submissions. The CLIP scores are the user-reported rendered results; their evaluation split was not specified. These are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values for the first two models come separately from their saved archives.
+The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submissions. The CLIP and DINOv3 scores are user-reported results; their evaluation splits were not specified. These are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values for the first two models come separately from their saved archives.
 
 | Model | mADM (ranking metric) | mAP | Rank-1 | Rank-5 | Rank-10 | mINP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ResNet-18 baseline | **0.3469** | 0.1048 | 0.1285 | 0.2232 | 0.2823 | 0.0769 |
 | ConvNeXt Tiny | **0.4135** | 0.1413 | 0.1585 | 0.2988 | 0.3767 | 0.1037 |
 | CLIP ViT-B/32 + AttriVision-inspired attribute head | **0.4278** | 0.1450 | 0.1471 | 0.3253 | 0.4253 | 0.1060 |
+| DINOv3 ViT-B/16 + pooled attribute head | **0.4832** | 0.2298 | 0.2396 | 0.4393 | 0.5438 | 0.1686 |
 
 ConvNeXt Tiny improves mADM by **0.0666** over the reported ResNet-18 result.
+
+## DINOv3 ViT-B/16: configuration and method
+
+The [Kaggle notebook](notebooks/dinov3_attribute/upar-track2-dinov3-kaggle.ipynb) uses the companion [training script](notebooks/dinov3_attribute/upar_dinov3.py) to train only an attribute head on frozen, generic pretrained DINOv3 features. The [saved submission archive](notebooks/dinov3_attribute/upar_dinov3_submission.zip) contains `run.py`, the example submission's unchanged `metadata.yaml`, a traced encoder and head in `assets/model.pt`, and `assets/config.json`. The archive records the 40 attribute names and `"score_method": "nll"`.
+
+| Component | Setting |
+| --- | --- |
+| Training and validation | Official `train.csv` (97,669 images) and `val.csv` (33,407 images), with 40 binary labels in the fixed challenge order; head training uses only the supplied challenge data |
+| Backbone | `facebook/dinov3-vitb16-pretrain-lvd1689m`, loaded with Hugging Face `AutoModel`; backbone stays frozen in evaluation mode |
+| Input | RGB, resized to **256 × 128** pixels (height × width); ImageNet mean `(0.485, 0.456, 0.406)` and standard deviation `(0.229, 0.224, 0.225)`; no training augmentation |
+| Image features | Concatenate the CLS token, mean of all patch tokens, mean of the upper-half patch grid, and mean of the lower-half patch grid; exclude register tokens from patch pooling |
+| Trainable head | LayerNorm over the concatenated features, followed by a linear layer producing 40 independent attribute logits |
+| Loss and optimizer | Unweighted `binary_cross_entropy_with_logits`; AdamW, learning rate `1e-3`, weight decay `0.01`; no learning-rate schedule |
+| Training | Cache frozen image features in half precision; feature batch size 64, head batch size 2,048, at most 60 epochs, seed 42, 2 feature-loader workers; CUDA autocast during feature extraction |
+| Checkpoint selection | NLL retrieval mADM on a fixed random subset of at most 256 unique validation queries, checked at epoch 1, every 5 epochs, and epoch 60; save the best head as `upar_dinov3_head.pth`; stop after 3 consecutive checks without improvement |
+| Recorded run | Stopped at epoch 55 and restored epoch **40**, with selection mADM **0.5927** |
+| Ranking selection | Compare NLL and probability L1 distances on the same selected queries; choose the higher-mADM method, then evaluate all unique validation queries; this run selected NLL |
+| Inference | Offline TorchScript encoder and head, batches of 64 images, attribute columns reordered to the incoming query names; return a `Q × G` `distances` matrix, with lower distances ranking first |
+
+For gallery image $g$, let $c_g$ be its CLS token and $P_g$ its final patch-token grid. With $P_g^{\mathrm{upper}}$ and $P_g^{\mathrm{lower}}$ denoting the top and bottom halves of that grid, the feature and predicted logits are
+
+$$
+f_g=\operatorname{concat}\left(c_g,\operatorname{mean}(P_g),\operatorname{mean}(P_g^{\mathrm{upper}}),\operatorname{mean}(P_g^{\mathrm{lower}})\right),\qquad
+z_g=W\operatorname{LayerNorm}(f_g)+b.
+$$
+
+The regional averages give the head separate upper-body and lower-body information alongside the global features. Only LayerNorm and the linear head receive optimizer updates. For training labels $y_{ia}\in\{0,1\}$ and probabilities $p_{ia}=\sigma(z_{ia})$, the loss for a batch of $B$ images is
+
+$$
+L_B=-\frac{1}{40B}\sum_{i=1}^{B}\sum_{a=1}^{40}\left[y_{ia}\log p_{ia}+(1-y_{ia})\log(1-p_{ia})\right].
+$$
+
+For binary query $q$, the packaged submission uses the independent-label Bernoulli negative log likelihood:
+
+$$
+d_{\mathrm{NLL}}(q,g)=\sum_{a=1}^{40}\left[\log(1+e^{z_{ga}})-q_a z_{ga}\right].
+$$
+
+The alternative considered during validation is $d_{\mathrm{L1}}(q,g)=\sum_{a=1}^{40}|q_a-\sigma(z_{ga})|$. Both distances are sorted in ascending order. Export fixes the rotary positional embedding buffers for the configured input size and checks traced predictions and packaged inference on CPU and GPU, allowing submission inference without Transformers or network access.
+
+The saved notebook separately reports these **public-validation** metrics for the restored head and NLL ranking:
+
+| mADM | mAP | Rank-1 | Rank-5 | Rank-10 | mINP |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.5898 | 0.1797 | 0.1984 | 0.3850 | 0.4685 | 0.0934 |
+
+The **0.4832 mADM** result in the main results table is the user-reported evaluation result, whose split was not specified; it is separate from the public-validation output above.
 
 ## CLIP ViT-B/32 with an AttriVision-inspired attribute head
 
