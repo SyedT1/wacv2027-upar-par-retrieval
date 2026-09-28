@@ -77,8 +77,8 @@ The [Kaggle notebook](notebooks/dinov3_attribute/upar-track2-dinov3-kaggle.ipynb
 For gallery image $g$, let $c_g$ be its CLS token and $P_g$ its final patch-token grid. With $P_g^{\mathrm{upper}}$ and $P_g^{\mathrm{lower}}$ denoting the top and bottom halves of that grid, the feature and predicted logits are
 
 $$
-f_g=\operatorname{concat}\left(c_g,\operatorname{mean}(P_g),\operatorname{mean}(P_g^{\mathrm{upper}}),\operatorname{mean}(P_g^{\mathrm{lower}})\right),\qquad
-z_g=W\operatorname{LayerNorm}(f_g)+b.
+f_g=\mathrm{concat}\left(c_g,\mathrm{mean}(P_g),\mathrm{mean}(P_g^{\mathrm{upper}}),\mathrm{mean}(P_g^{\mathrm{lower}})\right),\qquad
+z_g=W\,\mathrm{LayerNorm}(f_g)+b.
 $$
 
 The regional averages give the head separate upper-body and lower-body information alongside the global features. Only LayerNorm and the linear head receive optimizer updates. For training labels $y_{ia}\in\{0,1\}$ and probabilities $p_{ia}=\sigma(z_{ia})$, the loss for a batch of $B$ images is
