@@ -51,9 +51,11 @@ For a fine-tuned PE-Core Large run, use [upar-track2-pe-core-large-kaggle.ipynb]
 
 For a fine-tuned DINOv3 Large run, use [upar-track2-dinov3-large-kaggle.ipynb](notebooks/dinov3_large/upar-track2-dinov3-large-kaggle.ipynb) or its companion [training script](notebooks/dinov3_large/upar_dinov3_large.py). It fine-tunes the self-supervised `vit_large_patch16_dinov3.lvd1689m` checkpoint from `timm` end to end at 384 × 192, selects the checkpoint and ranking method on public validation mADM, and builds `upar_dinov3_large_submission.zip` with a TorchScript model of about 1.2 GB. Training requires a Kaggle GPU and Internet access; the `timm` copy of the checkpoint is not gated. Its user-reported result of 0.6245 mADM is 0.0050 below EVA-02 Large.
 
+For a fine-tuned SigLIP2 so400m run, use [upar-track2-siglip2-so400m-kaggle.ipynb](notebooks/siglip2_so400m/upar-track2-siglip2-so400m-kaggle.ipynb) or its companion [training script](notebooks/siglip2_so400m/upar_siglip2_so400m.py). It fine-tunes the vision tower of the image-text pretrained `vit_so400m_patch16_siglip_384.v2_webli` checkpoint from `timm` end to end at 384 × 192, selects the checkpoint and ranking method on public validation mADM, and builds `upar_siglip2_so400m_submission.zip`. Training requires a Kaggle GPU and Internet access. Its user-reported result of 0.6329 mADM is the best in the table below.
+
 ## Reported retrieval results
 
-The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submissions. The CLIP, DINOv3, DINOv3 Large, EVA-02 Large, and PE-Core Large scores are user-reported results; their evaluation splits were not specified. These are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values for the first two models come separately from their saved archives.
+The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submissions. The CLIP, DINOv3, DINOv3 Large, EVA-02 Large, PE-Core Large, and SigLIP2 so400m scores are user-reported results; their evaluation splits were not specified. These are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values for the first two models come separately from their saved archives.
 
 | Model | mADM (ranking metric) | mAP | Rank-1 | Rank-5 | Rank-10 | mINP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -64,10 +66,34 @@ The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submission
 | DINOv3 Large, fine-tuned end to end | **0.6245** | 0.3579 | 0.3862 | 0.5971 | 0.6843 | 0.2536 |
 | EVA-02 Large, fine-tuned end to end | **0.6295** | 0.3609 | 0.3945 | 0.6034 | 0.6924 | 0.2578 |
 | PE-Core Large, fine-tuned end to end | **0.6281** | 0.3666 | 0.3978 | 0.6100 | 0.7017 | 0.2641 |
+| SigLIP2 so400m, fine-tuned end to end | **0.6329** | 0.3724 | 0.3980 | 0.6083 | 0.7028 | 0.2668 |
 
 ConvNeXt Tiny improves mADM by **0.0666** over the reported ResNet-18 result. Fine-tuned EVA-02 Large improves mADM by **0.1463** over the reported DINOv3 result. Fine-tuned PE-Core Large is **0.0014** mADM below EVA-02 Large but higher on mAP, Rank-1, Rank-5, Rank-10, and mINP.
 
 Fine-tuned DINOv3 Large improves mADM by **0.1413** over the frozen DINOv3 ViT-B/16 head, but is **0.0050** below EVA-02 Large and **0.0036** below PE-Core Large, and lower than both on the other five metrics.
+
+Fine-tuned SigLIP2 so400m has the highest mADM, **0.0034** above EVA-02 Large and **0.0048** above PE-Core Large. It also has the highest mAP, Rank-10, and mINP, and its Rank-1 is within 0.0002 of PE-Core Large; PE-Core Large keeps the highest Rank-5.
+
+## SigLIP2 so400m: configuration and method
+
+The [Kaggle notebook](notebooks/siglip2_so400m/upar-track2-siglip2-so400m-kaggle.ipynb) uses the companion [training script](notebooks/siglip2_so400m/upar_siglip2_so400m.py) to fine-tune every layer of the vision tower of SigLIP2 so400m/16, an image-text encoder pretrained on WebLI, on the 40 challenge attributes. The text tower is not used. The submission archive it builds, `upar_siglip2_so400m_submission.zip`, is not stored in this repository; it contains `run.py`, `metadata.yaml`, a traced model in `assets/model.pt`, and `assets/config.json`.
+
+| Component | Setting |
+| --- | --- |
+| Training and validation | Official `train.csv` and `val.csv`, with 40 binary labels in the fixed challenge order; training uses only the supplied challenge data |
+| Backbone | `vit_so400m_patch16_siglip_384.v2_webli` from `timm` (about 400 M-parameter vision tower): contrastive image-text pretraining; no pedestrian-attribute weights; all layers fine-tuned |
+| Output | New `num_classes=40` head giving 40 independent attribute logits |
+| Input | RGB, bicubic resize to **384 × 192** pixels (height × width), a 24 × 12 patch grid at patch size 16, with the 384 × 384 position embedding resampled by `timm`; mean and standard deviation taken from the checkpoint's pretrained configuration |
+| Training augmentation | Random horizontal flip, random 384 × 192 crop after 10-pixel edge padding, and brightness and contrast jitter of 0.2; no hue or saturation jitter, because 24 of the 40 attributes are clothing colours |
+| Regularization | Stochastic depth (drop path) rate 0.1; gradient-norm clipping at 1.0 |
+| Loss and optimizer | Unweighted `BCEWithLogitsLoss`; AdamW through `timm`'s `create_optimizer_v2`, head learning rate `1e-4`, layer-wise learning-rate decay 0.75, weight decay 0.05 |
+| Schedule | Stepped per batch: linear warm-up over 500 steps, then cosine decay to zero over the remaining steps |
+| Training | 2 epochs, batch size 32 with the last partial batch dropped, seed 42, 2 data-loader workers; CUDA mixed precision and gradient checkpointing |
+| Checkpoint selection | NLL retrieval mADM on a fixed random subset of 256 unique validation queries after every epoch; keep the best checkpoint |
+| Ranking selection | Compare NLL and probability L1 distances on the same selected queries; choose the higher-mADM method, then evaluate all unique validation queries |
+| Inference | Offline TorchScript model, batches of 64 images under CUDA autocast, attribute columns reordered to the incoming query names; return a `Q × G` `distances` matrix, with lower distances ranking first |
+
+The optimizer, layer-wise learning rates, and warm-up and cosine factor are those given in the EVA-02 Large section below, with the same $\eta=10^{-4}$, $\gamma=0.75$, and $T_w=500$. The training loss is the unweighted binary cross-entropy $L_B$ given in the DINOv3 section, and ranking uses the same $d_{\mathrm{NLL}}$ and $d_{\mathrm{L1}}$ distances. The recorded epoch, selected ranking method, and public-validation metrics of this run were not saved with the repository; the **0.6329 mADM** result in the main results table is the user-reported evaluation result, whose split was not specified.
 
 ## DINOv3 Large: configuration and method
 
