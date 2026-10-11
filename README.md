@@ -47,9 +47,11 @@ For a fine-tuned EVA-02 Large run, use [upar-track2-eva02-large-kaggle.ipynb](no
 
 For a frozen AIMv2-3B run, use [upar_track2_aimv2_3b_kaggle.ipynb](notebooks/aimv2_3b/upar_track2_aimv2_3b_kaggle.ipynb) or its companion [training script](notebooks/aimv2_3b/upar_aimv2_3b.py). It caches frozen `aimv2_3b_patch14_448.apple_pt` features from `timm` at 448 × 224 (mean of all patch tokens and of the upper and lower halves), trains a 40-attribute head, selects the checkpoint and ranking method on public validation mADM, and builds `upar_aimv2_3b_submission.zip`. The checkpoint is a 10.9 GB download under Apple's research licence and is not gated; the submission holds the trunk in half precision and is about 5.5 GB. Training requires a Kaggle GPU and Internet access. No result has been recorded for this notebook yet.
 
+For a fine-tuned PE-Core Large run, use [upar-track2-pe-core-large-kaggle.ipynb](notebooks/pe_core_large/upar-track2-pe-core-large-kaggle.ipynb) or its companion [training script](notebooks/pe_core_large/upar_pe_core_large.py). It fine-tunes the vision tower of Meta's image-text pretrained `vit_pe_core_large_patch14_336.fb` checkpoint from `timm` end to end at 336 × 168, selects the checkpoint and ranking method on public validation mADM, and builds `upar_pe_core_large_submission.zip` with a TorchScript model of about 1.2 GB. Training requires a Kaggle GPU and Internet access; the checkpoint is a 1.27 GB download under the Apache-2.0 licence and is not gated. Its user-reported result of 0.6281 mADM is 0.0014 below EVA-02 Large, while its other five metrics are the highest in the table below.
+
 ## Reported retrieval results
 
-The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submissions. The CLIP, DINOv3, and EVA-02 Large scores are user-reported results; their evaluation splits were not specified. These are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values for the first two models come separately from their saved archives.
+The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submissions. The CLIP, DINOv3, EVA-02 Large, and PE-Core Large scores are user-reported results; their evaluation splits were not specified. These are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values for the first two models come separately from their saved archives.
 
 | Model | mADM (ranking metric) | mAP | Rank-1 | Rank-5 | Rank-10 | mINP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -58,8 +60,39 @@ The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submission
 | CLIP ViT-B/32 + AttriVision-inspired attribute head | **0.4278** | 0.1450 | 0.1471 | 0.3253 | 0.4253 | 0.1060 |
 | DINOv3 ViT-B/16 + pooled attribute head | **0.4832** | 0.2298 | 0.2396 | 0.4393 | 0.5438 | 0.1686 |
 | EVA-02 Large, fine-tuned end to end | **0.6295** | 0.3609 | 0.3945 | 0.6034 | 0.6924 | 0.2578 |
+| PE-Core Large, fine-tuned end to end | **0.6281** | 0.3666 | 0.3978 | 0.6100 | 0.7017 | 0.2641 |
 
-ConvNeXt Tiny improves mADM by **0.0666** over the reported ResNet-18 result. Fine-tuned EVA-02 Large improves mADM by **0.1463** over the reported DINOv3 result.
+ConvNeXt Tiny improves mADM by **0.0666** over the reported ResNet-18 result. Fine-tuned EVA-02 Large improves mADM by **0.1463** over the reported DINOv3 result. Fine-tuned PE-Core Large is **0.0014** mADM below EVA-02 Large but higher on mAP, Rank-1, Rank-5, Rank-10, and mINP.
+
+## PE-Core Large: configuration and method
+
+The [Kaggle notebook](notebooks/pe_core_large/upar-track2-pe-core-large-kaggle.ipynb) uses the companion [training script](notebooks/pe_core_large/upar_pe_core_large.py) to fine-tune every layer of the vision tower of Perception Encoder Core L/14, Meta's contrastive image-text encoder, on the 40 challenge attributes. The text tower is not downloaded. The submission archive it builds, `upar_pe_core_large_submission.zip` (1,175 MB in the recorded run), is not stored in this repository; it contains `run.py`, `metadata.yaml`, a traced model in `assets/model.pt`, and `assets/config.json`.
+
+| Component | Setting |
+| --- | --- |
+| Training and validation | Official `train.csv` (97,669 images) and `val.csv` (33,407 images), with 40 binary labels in the fixed challenge order; training uses only the supplied challenge data |
+| Backbone | `vit_pe_core_large_patch14_336.fb` from `timm` (about 316 M parameters): contrastive image-text pretraining; no pedestrian-attribute weights; all layers fine-tuned |
+| Output | The pretrained attention-pooling layer is kept and feeds a new `num_classes=40` head giving 40 independent attribute logits |
+| Input | RGB, bicubic resize to **336 × 168** pixels (height × width), a 24 × 12 patch grid, with the 336 × 336 absolute position embedding resampled by `timm` and the rotary embedding rebuilt for the same grid; mean and standard deviation taken from the checkpoint's pretrained configuration |
+| Training augmentation | Random horizontal flip, random 336 × 168 crop after 10-pixel edge padding, and brightness and contrast jitter of 0.2; no hue or saturation jitter, because 24 of the 40 attributes are clothing colours |
+| Regularization | Stochastic depth (drop path) rate 0.1; gradient-norm clipping at 1.0 |
+| Loss and optimizer | Unweighted `BCEWithLogitsLoss`; AdamW through `timm`'s `create_optimizer_v2`, head learning rate `1e-4`, layer-wise learning-rate decay 0.75, weight decay 0.05 |
+| Schedule | Stepped per batch: linear warm-up over 500 steps, then cosine decay to zero over the remaining steps |
+| Training | 3 epochs of 3,052 steps, batch size 32 with the last partial batch dropped, seed 42, 2 data-loader workers; CUDA mixed precision and gradient checkpointing |
+| Checkpoint selection | NLL retrieval mADM on a fixed random subset of 256 unique validation queries after every epoch; save the best as `upar_pe_core_large_best.pth` |
+| Recorded run | Restored epoch **3**, with selection mADM **0.7731** (epoch 1: 0.7440, epoch 2: 0.7730); training BCE fell from 0.1194 to 0.0675 to 0.0554 |
+| Ranking selection | Compare NLL and probability L1 distances on the same selected queries; choose the higher-mADM method, then evaluate all unique validation queries; this run selected NLL (0.7731 against 0.7272 for L1) |
+| Inference | Offline TorchScript model with plain (non-fused) attention, batches of 64 images under CUDA autocast, attribute columns reordered to the incoming query names; return a `Q × G` `distances` matrix, with lower distances ranking first |
+
+The optimizer, layer-wise learning rates $\eta_l$, and warm-up and cosine factor $\lambda(t)$ are those given in the EVA-02 Large section below, with the same $\eta=10^{-4}$, $\gamma=0.75$, and $T_w=500$. The training loss is the unweighted binary cross-entropy $L_B$ given in the DINOv3 section, and ranking uses the same $d_{\mathrm{NLL}}$ and $d_{\mathrm{L1}}$ distances, both sorted in ascending order. Export disables fused attention so that the traced graph loads in the evaluation container's older PyTorch, checks that traced and original predictions agree for batches of one and two images, and runs a one-image packaged inference call; the submission needs neither `timm` nor network access.
+
+The saved notebook separately reports these **public-validation** metrics for the restored epoch-3 model and NLL ranking, over all unique validation queries:
+
+| mADM | mAP | Rank-1 | Rank-5 | Rank-10 | mINP |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.7711 | 0.4203 | 0.4232 | 0.6493 | 0.7331 | 0.2932 |
+
+The **0.6281 mADM** result in the main results table is the user-reported evaluation result, whose split was not specified; it is separate from the public-validation output above.
 
 ## EVA-02 Large: configuration and method
 
