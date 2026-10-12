@@ -53,9 +53,11 @@ For a fine-tuned DINOv3 Large run, use [upar-track2-dinov3-large-kaggle.ipynb](n
 
 For a fine-tuned SigLIP2 so400m run, use [upar-track2-siglip2-so400m-kaggle.ipynb](notebooks/siglip2_so400m/upar-track2-siglip2-so400m-kaggle.ipynb) or its companion [training script](notebooks/siglip2_so400m/upar_siglip2_so400m.py). It fine-tunes the vision tower of the image-text pretrained `vit_so400m_patch16_siglip_384.v2_webli` checkpoint from `timm` end to end at 384 × 192, selects the checkpoint and ranking method on public validation mADM, and builds `upar_siglip2_so400m_submission.zip`. Training requires a Kaggle GPU and Internet access. Its user-reported result of 0.6329 mADM is the best in the table below.
 
+For a fine-tuned CLIP ConvNeXt-Large run, use [upar-track2-convnext-large-clip-kaggle.ipynb](notebooks/convnext_large_clip/upar-track2-convnext-large-clip-kaggle.ipynb) or its companion [training script](notebooks/convnext_large_clip/upar_convnext_large_clip.py). It fine-tunes the vision tower of the LAION-2B image-text pretrained `convnext_large_mlp.clip_laion2b_ft_soup_320` checkpoint from `timm` end to end at 448 × 224, selects the checkpoint and ranking method on public validation mADM, and builds `upar_convnext_large_clip_submission.zip` (about 0.74 GB). Training requires a Kaggle GPU and Internet access; the checkpoint is not gated. Its user-reported result is 0.5994 mADM.
+
 ## Reported retrieval results
 
-The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submissions. The CLIP, DINOv3, DINOv3 Large, EVA-02 Large, PE-Core Large, and SigLIP2 so400m scores are user-reported results; their evaluation splits were not specified. These are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values for the first two models come separately from their saved archives.
+The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submissions. The CLIP, DINOv3, DINOv3 Large, EVA-02 Large, PE-Core Large, SigLIP2 so400m, and CLIP ConvNeXt-Large scores are user-reported results; their evaluation splits were not specified. These are retrieval metrics, not attribute-classification accuracies. Checkpoint epochs and weighted validation BCE values for the first two models come separately from their saved archives.
 
 | Model | mADM (ranking metric) | mAP | Rank-1 | Rank-5 | Rank-10 | mINP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -67,12 +69,38 @@ The ResNet-18 and ConvNeXt Tiny scores below were supplied from their submission
 | EVA-02 Large, fine-tuned end to end | **0.6295** | 0.3609 | 0.3945 | 0.6034 | 0.6924 | 0.2578 |
 | PE-Core Large, fine-tuned end to end | **0.6281** | 0.3666 | 0.3978 | 0.6100 | 0.7017 | 0.2641 |
 | SigLIP2 so400m, fine-tuned end to end | **0.6329** | 0.3724 | 0.3980 | 0.6083 | 0.7028 | 0.2668 |
+| CLIP ConvNeXt-Large, fine-tuned end to end | **0.5994** | 0.3423 | 0.3828 | 0.5817 | 0.6798 | 0.2482 |
 
 ConvNeXt Tiny improves mADM by **0.0666** over the reported ResNet-18 result. Fine-tuned EVA-02 Large improves mADM by **0.1463** over the reported DINOv3 result. Fine-tuned PE-Core Large is **0.0014** mADM below EVA-02 Large but higher on mAP, Rank-1, Rank-5, Rank-10, and mINP.
 
 Fine-tuned DINOv3 Large improves mADM by **0.1413** over the frozen DINOv3 ViT-B/16 head, but is **0.0050** below EVA-02 Large and **0.0036** below PE-Core Large, and lower than both on the other five metrics.
 
 Fine-tuned SigLIP2 so400m has the highest mADM, **0.0034** above EVA-02 Large and **0.0048** above PE-Core Large. It also has the highest mAP, Rank-10, and mINP, and its Rank-1 is within 0.0002 of PE-Core Large; PE-Core Large keeps the highest Rank-5.
+
+Fine-tuned CLIP ConvNeXt-Large improves mADM by **0.1162** over the frozen DINOv3 ViT-B/16 head, but is the lowest of the fine-tuned large models: **0.0251** below DINOv3 Large and **0.0335** below SigLIP2 so400m, and lower than every fine-tuned ViT on all six metrics. It is the only convolutional large backbone here, so its value is as a diverse member of a possible ensemble rather than as a single model.
+
+## CLIP ConvNeXt-Large: configuration and method
+
+The [Kaggle notebook](notebooks/convnext_large_clip/upar-track2-convnext-large-clip-kaggle.ipynb) uses the companion [training script](notebooks/convnext_large_clip/upar_convnext_large_clip.py) to fine-tune every layer of the vision tower of an OpenCLIP ConvNeXt-Large on the 40 challenge attributes. The text tower is not used. The submission archive it builds, `upar_convnext_large_clip_submission.zip` (739 MB), is not stored in this repository; it contains `run.py`, `metadata.yaml`, a traced model in `assets/model.pt`, and `assets/config.json`.
+
+| Component | Setting |
+| --- | --- |
+| Training and validation | Official `train.csv` (97,669 images) and `val.csv` (33,407 images), with 40 binary labels in the fixed challenge order; training uses only the supplied challenge data |
+| Backbone | `convnext_large_mlp.clip_laion2b_ft_soup_320` from `timm`: contrastive LAION-2B image-text pretraining, then fine-tuned at 320 × 320 and weight-averaged; no pedestrian-attribute weights; all layers fine-tuned; Apache-2.0, not gated |
+| Output | The pretrained 1,536-wide projection layer is kept and feeds a new `num_classes=40` head giving 40 independent attribute logits |
+| Input | RGB, bicubic resize to **448 × 224** pixels (height × width), both multiples of the 32-pixel stride, giving a 14 × 7 final feature map; mean and standard deviation taken from the checkpoint's pretrained configuration |
+| Training augmentation | Random horizontal flip, random 448 × 224 crop after 10-pixel edge padding, and brightness and contrast jitter of 0.2; no hue or saturation jitter, because 24 of the 40 attributes are clothing colours |
+| Regularization | Stochastic depth (drop path) rate 0.1; gradient-norm clipping at 1.0 |
+| Loss and optimizer | Unweighted `BCEWithLogitsLoss`; AdamW through `timm`'s `create_optimizer_v2`, head learning rate `1e-4`, layer-wise learning-rate decay 0.9, weight decay 0.05 |
+| Schedule | Stepped per batch: linear warm-up over 500 steps, then cosine decay to zero over the remaining steps |
+| Training | 3 epochs, batch size 32 with the last partial batch dropped, seed 42, 2 data-loader workers; CUDA mixed precision and gradient checkpointing |
+| Checkpoint selection | NLL retrieval mADM on a fixed random subset of 256 unique validation queries after every epoch; keep the best checkpoint |
+| Ranking selection | Compare NLL and probability L1 distances on the same selected queries; choose the higher-mADM method, then evaluate all unique validation queries |
+| Inference | Offline TorchScript model, batches of 64 images under CUDA autocast, attribute columns reordered to the incoming query names; return a `Q × G` `distances` matrix, with lower distances ranking first |
+
+The layer-wise decay is 0.9 rather than the 0.75 used for the ViT runs because `timm` applies it per block and ConvNeXt-Large has 36 blocks, so 0.75 would leave the early stages effectively frozen. The other optimizer, schedule, loss, and distance definitions are those of the EVA-02 Large and DINOv3 sections below.
+
+In the notebook run, the training BCE fell from 0.1115 to 0.0628 to 0.0453 over the three epochs, and the selection-subset mADM rose from 0.7221 to 0.7547 to 0.7568, so epoch 3 was kept. NLL (0.7568) beat probability L1 (0.7079) and was chosen. The full public-validation metrics printed by the notebook were mADM 0.7534, mAP 0.3951, Rank-1 0.4024, Rank-5 0.6332, Rank-10 0.7207, and mINP 0.2720. The **0.5994 mADM** in the main results table is the separate user-reported result, whose split was not specified; the two sets of numbers are not comparable.
 
 ## SigLIP2 so400m: configuration and method
 
